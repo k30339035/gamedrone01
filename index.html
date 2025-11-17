@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Drone Sky Writer - 드론 글씨 그리기</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="container">
+        <div id="ui-panel">
+            <h1>🚁 드론 스카이 라이터</h1>
+            <div class="input-group">
+                <input type="text" id="textInput" placeholder="글자나 숫자를 입력하세요..." maxlength="20">
+                <button id="drawButton">✈️ 드론 출발!</button>
+            </div>
+            <div class="controls">
+                <button id="resetButton">🔄 초기화</button>
+                <button id="speedUp">⚡ 빠르게</button>
+                <button id="speedDown">🐢 느리게</button>
+            </div>
+            <div id="info">
+                <p>드론 개수: <span id="droneCount">0</span></p>
+                <p>진행률: <span id="progress">0</span>%</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
