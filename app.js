@@ -3,8 +3,160 @@ let scene, camera, renderer, drones = [], trails = [], particles = [];
 let animationSpeed = 1;
 let isAnimating = false;
 
+// Audio context for realistic drone sounds
+let audioContext;
+let masterGainNode;
+let droneAudioNodes = [];
+
+// Initialize audio system
+function initAudio() {
+    try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        masterGainNode = audioContext.createGain();
+        masterGainNode.gain.value = 0.3; // Master volume
+        masterGainNode.connect(audioContext.destination);
+    } catch (e) {
+        console.log('Web Audio API not supported');
+    }
+}
+
+// Create realistic drone propeller sound
+function createDroneSound() {
+    if (!audioContext) return null;
+
+    const droneSound = {
+        oscillators: [],
+        gainNodes: [],
+        filters: []
+    };
+
+    // Multiple oscillators for rich drone sound
+    const frequencies = [110, 165, 220, 330]; // Low frequency hum
+
+    frequencies.forEach((freq, index) => {
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        const filter = audioContext.createBiquadFilter();
+
+        oscillator.type = 'sawtooth';
+        oscillator.frequency.value = freq;
+
+        filter.type = 'lowpass';
+        filter.frequency.value = 800 + Math.random() * 400;
+        filter.Q.value = 1;
+
+        gainNode.gain.value = 0.15 / (index + 1); // Decreasing volume for harmonics
+
+        oscillator.connect(filter);
+        filter.connect(gainNode);
+        gainNode.connect(masterGainNode);
+
+        oscillator.start();
+
+        droneSound.oscillators.push(oscillator);
+        droneSound.gainNodes.push(gainNode);
+        droneSound.filters.push(filter);
+    });
+
+    // Add pink noise for propeller whoosh
+    const bufferSize = 2 * audioContext.sampleRate;
+    const noiseBuffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    for (let i = 0; i < bufferSize; i++) {
+        const white = Math.random() * 2 - 1;
+        b0 = 0.99886 * b0 + white * 0.0555179;
+        b1 = 0.99332 * b1 + white * 0.0750759;
+        b2 = 0.96900 * b2 + white * 0.1538520;
+        b3 = 0.86650 * b3 + white * 0.3104856;
+        b4 = 0.55000 * b4 + white * 0.5329522;
+        b5 = -0.7616 * b5 - white * 0.0168980;
+        output[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+        output[i] *= 0.11;
+        b6 = white * 0.115926;
+    }
+
+    const noiseSource = audioContext.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+    noiseSource.loop = true;
+
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.value = 1200;
+    noiseFilter.Q.value = 0.5;
+
+    const noiseGain = audioContext.createGain();
+    noiseGain.gain.value = 0.08;
+
+    noiseSource.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGainNode);
+
+    noiseSource.start();
+
+    droneSound.noiseSource = noiseSource;
+    droneSound.noiseGain = noiseGain;
+    droneSound.noiseFilter = noiseFilter;
+
+    return droneSound;
+}
+
+// Update drone sound based on movement
+function updateDroneSound(droneSound, isMoving, speed = 1) {
+    if (!droneSound || !audioContext) return;
+
+    const targetVolume = isMoving ? 0.15 : 0.05;
+    const targetFreqMultiplier = isMoving ? 1 + speed * 0.3 : 1;
+
+    droneSound.gainNodes.forEach((gainNode, index) => {
+        gainNode.gain.linearRampToValueAtTime(
+            targetVolume / (index + 1),
+            audioContext.currentTime + 0.1
+        );
+    });
+
+    droneSound.oscillators.forEach((osc, index) => {
+        const baseFreq = [110, 165, 220, 330][index];
+        osc.frequency.linearRampToValueAtTime(
+            baseFreq * targetFreqMultiplier,
+            audioContext.currentTime + 0.1
+        );
+    });
+
+    if (droneSound.noiseGain) {
+        droneSound.noiseGain.gain.linearRampToValueAtTime(
+            isMoving ? 0.12 : 0.03,
+            audioContext.currentTime + 0.1
+        );
+    }
+
+    if (droneSound.noiseFilter) {
+        droneSound.noiseFilter.frequency.linearRampToValueAtTime(
+            isMoving ? 1500 + speed * 500 : 1000,
+            audioContext.currentTime + 0.1
+        );
+    }
+}
+
+// Stop drone sound
+function stopDroneSound(droneSound) {
+    if (!droneSound || !audioContext) return;
+
+    droneSound.oscillators.forEach(osc => {
+        osc.stop();
+    });
+
+    if (droneSound.noiseSource) {
+        droneSound.noiseSource.stop();
+    }
+}
+
 // Initialize the 3D scene
 function init() {
+    // Initialize audio
+    initAudio();
+
     // Scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87ceeb);
@@ -82,77 +234,141 @@ function init() {
     animate();
 }
 
-// Create a realistic professional drone model (DJI/Racing drone style)
+// Create an ultra-realistic professional drone model (Premium DJI Inspire/Phantom style)
 function createDrone() {
     const droneGroup = new THREE.Group();
 
-    // Materials
+    // Premium materials with realistic PBR properties
     const carbonFiberMaterial = new THREE.MeshStandardMaterial({
-        color: 0x1a1a1a,
-        metalness: 0.9,
-        roughness: 0.3,
-        envMapIntensity: 1
-    });
-
-    const metalMaterial = new THREE.MeshStandardMaterial({
-        color: 0x888888,
+        color: 0x0a0a0a,
         metalness: 0.95,
-        roughness: 0.15
+        roughness: 0.2,
+        envMapIntensity: 1.5
     });
 
-    const plasticBlackMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2c2c2c,
-        metalness: 0.3,
-        roughness: 0.6
+    const titaniumMaterial = new THREE.MeshStandardMaterial({
+        color: 0xaaaaaa,
+        metalness: 0.98,
+        roughness: 0.12
+    });
+
+    const mattePlasticMaterial = new THREE.MeshStandardMaterial({
+        color: 0x1a1a1a,
+        metalness: 0.1,
+        roughness: 0.8
+    });
+
+    const glossyPlasticMaterial = new THREE.MeshStandardMaterial({
+        color: 0x2a2a2a,
+        metalness: 0.4,
+        roughness: 0.3
     });
 
     const redAccentMaterial = new THREE.MeshStandardMaterial({
-        color: 0xff0000,
-        metalness: 0.5,
-        roughness: 0.4
+        color: 0xff1744,
+        metalness: 0.7,
+        roughness: 0.2,
+        emissive: 0x330000,
+        emissiveIntensity: 0.3
     });
 
-    // Central flight controller / main body
-    const mainBodyGeometry = new THREE.BoxGeometry(0.8, 0.15, 0.8);
-    const mainBody = new THREE.Mesh(mainBodyGeometry, carbonFiberMaterial);
+    const whiteAccentMaterial = new THREE.MeshStandardMaterial({
+        color: 0xf5f5f5,
+        metalness: 0.6,
+        roughness: 0.25
+    });
+
+    // Sleek aerodynamic main body (rounded, futuristic)
+    const mainBodyGeometry = new THREE.SphereGeometry(0.35, 16, 16);
+    mainBodyGeometry.scale(1, 0.4, 1);
+    const mainBody = new THREE.Mesh(mainBodyGeometry, glossyPlasticMaterial);
     mainBody.castShadow = true;
+    mainBody.receiveShadow = true;
     droneGroup.add(mainBody);
 
-    // Top plate (stacked design)
-    const topPlateGeometry = new THREE.BoxGeometry(0.7, 0.08, 0.7);
-    const topPlate = new THREE.Mesh(topPlateGeometry, carbonFiberMaterial);
-    topPlate.position.y = 0.2;
-    topPlate.castShadow = true;
-    droneGroup.add(topPlate);
+    // Top cover (aerodynamic shell)
+    const topCoverGeometry = new THREE.SphereGeometry(0.32, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+    const topCover = new THREE.Mesh(topCoverGeometry, carbonFiberMaterial);
+    topCover.position.y = 0.05;
+    topCover.castShadow = true;
+    droneGroup.add(topCover);
 
-    // Battery pack on top
-    const batteryGeometry = new THREE.BoxGeometry(0.5, 0.15, 0.3);
+    // Bottom cover
+    const bottomCoverGeometry = new THREE.SphereGeometry(0.32, 16, 16, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+    const bottomCover = new THREE.Mesh(bottomCoverGeometry, mattePlasticMaterial);
+    bottomCover.position.y = -0.05;
+    bottomCover.receiveShadow = true;
+    droneGroup.add(bottomCover);
+
+    // Central hub ring (premium detail)
+    const ringGeometry = new THREE.TorusGeometry(0.3, 0.03, 12, 24);
+    const ring = new THREE.Mesh(ringGeometry, titaniumMaterial);
+    ring.rotation.x = Math.PI / 2;
+    ring.castShadow = true;
+    droneGroup.add(ring);
+
+    // Top status LED ring
+    const ledRingGeometry = new THREE.TorusGeometry(0.25, 0.015, 8, 24);
+    const ledRingMaterial = new THREE.MeshStandardMaterial({
+        color: 0x00ffff,
+        emissive: 0x00ffff,
+        emissiveIntensity: 2,
+        metalness: 0.8,
+        roughness: 0.2
+    });
+    const ledRing = new THREE.Mesh(ledRingGeometry, ledRingMaterial);
+    ledRing.rotation.x = Math.PI / 2;
+    ledRing.position.y = 0.15;
+    droneGroup.add(ledRing);
+
+    // GPS module (sleek dome)
+    const gpsGeometry = new THREE.SphereGeometry(0.12, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+    const gpsMaterial = new THREE.MeshStandardMaterial({
+        color: 0x1a1a1a,
+        metalness: 0.3,
+        roughness: 0.6,
+        transparent: true,
+        opacity: 0.9
+    });
+    const gps = new THREE.Mesh(gpsGeometry, gpsMaterial);
+    gps.position.set(0, 0.2, 0);
+    droneGroup.add(gps);
+
+    // Battery pack (integrated, sleek design)
+    const batteryGeometry = new THREE.BoxGeometry(0.35, 0.1, 0.18);
     const batteryMaterial = new THREE.MeshStandardMaterial({
-        color: 0x1e5a8e,
-        metalness: 0.4,
-        roughness: 0.5
+        color: 0x0d47a1,
+        metalness: 0.6,
+        roughness: 0.3
     });
     const battery = new THREE.Mesh(batteryGeometry, batteryMaterial);
-    battery.position.y = 0.32;
+    battery.position.set(0, 0.22, -0.1);
     battery.castShadow = true;
     droneGroup.add(battery);
 
-    // Battery connector detail
-    const connectorGeometry = new THREE.BoxGeometry(0.15, 0.05, 0.1);
+    // Battery connector (XT60 style)
+    const connectorGeometry = new THREE.BoxGeometry(0.12, 0.04, 0.08);
     const connector = new THREE.Mesh(connectorGeometry, redAccentMaterial);
-    connector.position.set(0, 0.38, -0.15);
+    connector.position.set(0, 0.24, -0.19);
     droneGroup.add(connector);
 
-    // Flight controller board (visible through gap)
-    const fcGeometry = new THREE.BoxGeometry(0.4, 0.02, 0.4);
-    const fcMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2d5016,
-        metalness: 0.6,
-        roughness: 0.4
-    });
-    const fc = new THREE.Mesh(fcGeometry, fcMaterial);
-    fc.position.y = -0.05;
-    droneGroup.add(fc);
+    // Ventilation slots (premium detail)
+    for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2;
+        const slotGeometry = new THREE.BoxGeometry(0.02, 0.08, 0.08);
+        const slot = new THREE.Mesh(slotGeometry, new THREE.MeshStandardMaterial({
+            color: 0x000000,
+            metalness: 0,
+            roughness: 1
+        }));
+        slot.position.set(
+            Math.cos(angle) * 0.28,
+            0,
+            Math.sin(angle) * 0.28
+        );
+        slot.lookAt(0, 0, 0);
+        droneGroup.add(slot);
+    }
 
     // Arm positions for X-configuration
     const armPositions = [
@@ -165,185 +381,251 @@ function createDrone() {
     droneGroup.userData.propellers = [];
 
     armPositions.forEach((armPos, index) => {
-        // Carbon fiber arm (flat profile)
-        const armLength = 2.2;
-        const armGeometry = new THREE.BoxGeometry(0.12, 0.08, armLength);
-        const arm = new THREE.Mesh(armGeometry, carbonFiberMaterial);
+        // Premium carbon fiber arm (sleek aerodynamic profile)
+        const armLength = 2.0;
 
-        arm.position.set(armPos.x * 0.3, 0, armPos.z * 0.3);
-        arm.rotation.y = armPos.angle;
-        arm.castShadow = true;
-        droneGroup.add(arm);
+        // Main arm structure (tapered)
+        const armGroup = new THREE.Group();
+        const segments = 3;
+        for (let seg = 0; seg < segments; seg++) {
+            const segLength = armLength / segments;
+            const width = 0.14 - (seg * 0.015);
+            const height = 0.09 - (seg * 0.01);
 
-        // Red accent stripe on arm
-        const stripeGeometry = new THREE.BoxGeometry(0.13, 0.02, armLength * 0.3);
-        const stripe = new THREE.Mesh(stripeGeometry, redAccentMaterial);
-        stripe.position.set(armPos.x * 0.3, 0.05, armPos.z * 0.3);
+            const segGeometry = new THREE.BoxGeometry(width, height, segLength);
+            const segMesh = new THREE.Mesh(segGeometry, carbonFiberMaterial);
+            segMesh.position.z = (seg - segments / 2) * segLength + segLength / 2;
+            segMesh.castShadow = true;
+            armGroup.add(segMesh);
+        }
+
+        armGroup.position.set(armPos.x * 0.28, 0, armPos.z * 0.28);
+        armGroup.rotation.y = armPos.angle;
+        droneGroup.add(armGroup);
+
+        // White racing stripe (premium detail)
+        const stripeGeometry = new THREE.BoxGeometry(0.15, 0.015, armLength * 0.6);
+        const stripe = new THREE.Mesh(stripeGeometry, whiteAccentMaterial);
+        stripe.position.set(armPos.x * 0.28, 0.055, armPos.z * 0.28);
         stripe.rotation.y = armPos.angle;
         droneGroup.add(stripe);
 
-        // Motor housing at arm end
+        // Motor assembly at arm end
         const motorDistance = armLength / 2;
-        const motorX = armPos.x * 0.3 + Math.sin(armPos.angle) * motorDistance;
-        const motorZ = armPos.z * 0.3 + Math.cos(armPos.angle) * motorDistance;
+        const motorX = armPos.x * 0.28 + Math.sin(armPos.angle) * motorDistance;
+        const motorZ = armPos.z * 0.28 + Math.cos(armPos.angle) * motorDistance;
 
-        // Motor base
-        const motorBaseGeometry = new THREE.CylinderGeometry(0.2, 0.25, 0.25, 16);
-        const motorBase = new THREE.Mesh(motorBaseGeometry, plasticBlackMaterial);
-        motorBase.position.set(motorX, 0.1, motorZ);
+        // Motor base (professional design)
+        const motorBaseGeometry = new THREE.CylinderGeometry(0.18, 0.22, 0.2, 20);
+        const motorBase = new THREE.Mesh(motorBaseGeometry, mattePlasticMaterial);
+        motorBase.position.set(motorX, 0.08, motorZ);
         motorBase.castShadow = true;
         droneGroup.add(motorBase);
 
-        // Motor top (bell)
-        const motorBellGeometry = new THREE.CylinderGeometry(0.22, 0.2, 0.15, 16);
-        const motorBell = new THREE.Mesh(motorBellGeometry, metalMaterial);
-        motorBell.position.set(motorX, 0.3, motorZ);
+        // Motor cooling fins
+        for (let fin = 0; fin < 8; fin++) {
+            const finAngle = (fin / 8) * Math.PI * 2;
+            const finGeometry = new THREE.BoxGeometry(0.02, 0.15, 0.05);
+            const finMesh = new THREE.Mesh(finGeometry, titaniumMaterial);
+            finMesh.position.set(
+                motorX + Math.cos(finAngle) * 0.19,
+                0.08,
+                motorZ + Math.sin(finAngle) * 0.19
+            );
+            finMesh.rotation.y = finAngle;
+            finMesh.castShadow = true;
+            droneGroup.add(finMesh);
+        }
+
+        // Motor bell (high-end metal finish)
+        const motorBellGeometry = new THREE.CylinderGeometry(0.2, 0.18, 0.12, 20);
+        const motorBell = new THREE.Mesh(motorBellGeometry, titaniumMaterial);
+        motorBell.position.set(motorX, 0.24, motorZ);
         motorBell.castShadow = true;
         droneGroup.add(motorBell);
 
-        // Motor shaft
-        const shaftGeometry = new THREE.CylinderGeometry(0.04, 0.04, 0.15, 8);
-        const shaft = new THREE.Mesh(shaftGeometry, metalMaterial);
-        shaft.position.set(motorX, 0.45, motorZ);
+        // Motor coil detail (visible through bell)
+        const coilGeometry = new THREE.TorusGeometry(0.14, 0.02, 8, 16);
+        const coilMaterial = new THREE.MeshStandardMaterial({
+            color: 0xcc6600,
+            metalness: 0.9,
+            roughness: 0.3
+        });
+        const coil = new THREE.Mesh(coilGeometry, coilMaterial);
+        coil.position.set(motorX, 0.2, motorZ);
+        coil.rotation.x = Math.PI / 2;
+        droneGroup.add(coil);
+
+        // Motor shaft (precision machined)
+        const shaftGeometry = new THREE.CylinderGeometry(0.035, 0.035, 0.18, 12);
+        const shaft = new THREE.Mesh(shaftGeometry, titaniumMaterial);
+        shaft.position.set(motorX, 0.38, motorZ);
         droneGroup.add(shaft);
 
-        // Realistic propeller (3-blade)
+        // Premium 3-blade propeller
         const propellerGroup = new THREE.Group();
         for (let i = 0; i < 3; i++) {
             const blade = createPropellerBlade();
             blade.rotation.y = (i * Math.PI * 2) / 3;
             propellerGroup.add(blade);
         }
-        propellerGroup.position.set(motorX, 0.52, motorZ);
+        propellerGroup.position.set(motorX, 0.47, motorZ);
         droneGroup.add(propellerGroup);
         droneGroup.userData.propellers.push(propellerGroup);
 
-        // Propeller hub/nut
-        const hubGeometry = new THREE.CylinderGeometry(0.08, 0.08, 0.05, 6);
-        const hub = new THREE.Mesh(hubGeometry, redAccentMaterial);
-        hub.position.set(motorX, 0.52, motorZ);
+        // Propeller hub (CNC machined aluminum look)
+        const hubGeometry = new THREE.CylinderGeometry(0.065, 0.075, 0.04, 6);
+        const hub = new THREE.Mesh(hubGeometry, titaniumMaterial);
+        hub.position.set(motorX, 0.47, motorZ);
         droneGroup.add(hub);
 
-        // Tiny LED indicator on arm
-        const ledSize = 0.05;
-        const ledGeometry = new THREE.SphereGeometry(ledSize, 8, 8);
+        // Hub center nut (red anodized)
+        const nutGeometry = new THREE.CylinderGeometry(0.045, 0.045, 0.05, 6);
+        const nut = new THREE.Mesh(nutGeometry, redAccentMaterial);
+        nut.position.set(motorX, 0.495, motorZ);
+        droneGroup.add(nut);
+
+        // Navigation LED (aviation grade)
+        const ledSize = 0.04;
+        const ledGeometry = new THREE.SphereGeometry(ledSize, 12, 12);
         const ledColor = index < 2 ? 0xff0000 : 0x00ff00; // Front red, back green
         const ledMaterial = new THREE.MeshStandardMaterial({
             color: ledColor,
             emissive: ledColor,
-            emissiveIntensity: 3,
+            emissiveIntensity: 4,
             transparent: true,
-            opacity: 0.9
+            opacity: 0.95
         });
         const led = new THREE.Mesh(ledGeometry, ledMaterial);
-        led.position.set(motorX, 0.05, motorZ);
+        led.position.set(motorX, 0.02, motorZ);
         droneGroup.add(led);
 
-        // Subtle LED point light
-        const ledLight = new THREE.PointLight(ledColor, 0.5, 3);
-        ledLight.position.set(motorX, 0.05, motorZ);
+        // LED point light (brighter)
+        const ledLight = new THREE.PointLight(ledColor, 0.8, 4);
+        ledLight.position.set(motorX, 0.02, motorZ);
         droneGroup.add(ledLight);
+
+        // Motor power indicator (small LED)
+        const powerLedGeometry = new THREE.SphereGeometry(0.02, 8, 8);
+        const powerLed = new THREE.Mesh(powerLedGeometry, new THREE.MeshStandardMaterial({
+            color: 0x0080ff,
+            emissive: 0x0080ff,
+            emissiveIntensity: 3
+        }));
+        powerLed.position.set(motorX, 0.15, motorZ);
+        droneGroup.add(powerLed);
     });
 
-    // Camera gimbal mount (professional 3-axis gimbal style)
-    const gimbalArmGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8);
-    const gimbalArm = new THREE.Mesh(gimbalArmGeometry, metalMaterial);
-    gimbalArm.position.set(0, -0.25, 0.3);
-    gimbalArm.castShadow = true;
-    droneGroup.add(gimbalArm);
+    // Professional 3-axis gimbal system
+    const gimbalBaseGeometry = new THREE.SphereGeometry(0.08, 12, 12);
+    const gimbalBase = new THREE.Mesh(gimbalBaseGeometry, titaniumMaterial);
+    gimbalBase.position.set(0, -0.18, 0.25);
+    gimbalBase.castShadow = true;
+    droneGroup.add(gimbalBase);
 
-    // Camera body (realistic camera shape)
-    const cameraBodyGeometry = new THREE.BoxGeometry(0.25, 0.15, 0.2);
-    const cameraBody = new THREE.Mesh(cameraBodyGeometry, plasticBlackMaterial);
-    cameraBody.position.set(0, -0.35, 0.35);
+    // Gimbal arms (dual axis)
+    const gimbalArmGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.15, 8);
+    const gimbalArm1 = new THREE.Mesh(gimbalArmGeometry, titaniumMaterial);
+    gimbalArm1.position.set(0, -0.24, 0.32);
+    gimbalArm1.castShadow = true;
+    droneGroup.add(gimbalArm1);
+
+    // Camera housing (premium compact design)
+    const cameraBodyGeometry = new THREE.BoxGeometry(0.22, 0.12, 0.16);
+    cameraBodyGeometry.translate(0, 0, 0.08);
+    const cameraBody = new THREE.Mesh(cameraBodyGeometry, mattePlasticMaterial);
+    cameraBody.position.set(0, -0.3, 0.32);
     cameraBody.castShadow = true;
     droneGroup.add(cameraBody);
 
-    // Camera lens
-    const lensGeometry = new THREE.CylinderGeometry(0.08, 0.08, 0.1, 16);
-    const lensMaterial = new THREE.MeshStandardMaterial({
-        color: 0x000000,
-        metalness: 0.95,
-        roughness: 0.05
-    });
-    const lens = new THREE.Mesh(lensGeometry, lensMaterial);
-    lens.rotation.x = Math.PI / 2;
-    lens.position.set(0, -0.35, 0.45);
-    droneGroup.add(lens);
+    // Camera lens assembly (large sensor)
+    const lensHousingGeometry = new THREE.CylinderGeometry(0.09, 0.09, 0.12, 20);
+    const lensHousing = new THREE.Mesh(lensHousingGeometry, mattePlasticMaterial);
+    lensHousing.rotation.x = Math.PI / 2;
+    lensHousing.position.set(0, -0.3, 0.48);
+    lensHousing.castShadow = true;
+    droneGroup.add(lensHousing);
 
-    // Lens glass (reflective)
-    const glassGeometry = new THREE.CircleGeometry(0.07, 16);
+    // Lens glass (multi-coated optics)
+    const glassGeometry = new THREE.CircleGeometry(0.08, 20);
     const glassMaterial = new THREE.MeshStandardMaterial({
-        color: 0x1a1a3e,
+        color: 0x1a2a3e,
         metalness: 1,
-        roughness: 0.1,
-        emissive: 0x0a0a1e,
-        emissiveIntensity: 0.5
+        roughness: 0.05,
+        emissive: 0x0a1520,
+        emissiveIntensity: 0.8
     });
     const glass = new THREE.Mesh(glassGeometry, glassMaterial);
     glass.rotation.y = Math.PI / 2;
-    glass.position.set(0, -0.35, 0.5);
+    glass.position.set(0, -0.3, 0.54);
     droneGroup.add(glass);
 
-    // GPS module on top
-    const gpsGeometry = new THREE.CylinderGeometry(0.15, 0.15, 0.08, 8);
-    const gpsMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2c2c2c,
-        metalness: 0.2,
-        roughness: 0.7
-    });
-    const gps = new THREE.Mesh(gpsGeometry, gpsMaterial);
-    gps.position.set(0, 0.45, 0);
-    droneGroup.add(gps);
+    // Lens hood
+    const lensHoodGeometry = new THREE.CylinderGeometry(0.095, 0.11, 0.06, 20);
+    const lensHood = new THREE.Mesh(lensHoodGeometry, mattePlasticMaterial);
+    lensHood.rotation.x = Math.PI / 2;
+    lensHood.position.set(0, -0.3, 0.57);
+    droneGroup.add(lensHood);
 
-    // Antenna (thin rod)
-    const antennaGeometry = new THREE.CylinderGeometry(0.01, 0.01, 0.4, 6);
-    const antenna = new THREE.Mesh(antennaGeometry, metalMaterial);
-    antenna.position.set(0.25, 0.3, -0.3);
-    antenna.rotation.z = Math.PI / 6;
-    droneGroup.add(antenna);
+    // Camera status LED
+    const camLedGeometry = new THREE.SphereGeometry(0.015, 8, 8);
+    const camLed = new THREE.Mesh(camLedGeometry, new THREE.MeshStandardMaterial({
+        color: 0xff0000,
+        emissive: 0xff0000,
+        emissiveIntensity: 4
+    }));
+    camLed.position.set(0.08, -0.28, 0.38);
+    droneGroup.add(camLed);
 
-    // Landing gear (4 small legs)
+    // Retractable landing gear (premium design)
     const legPositions = [
-        { x: 0.6, z: 0.6 },
-        { x: -0.6, z: 0.6 },
-        { x: 0.6, z: -0.6 },
-        { x: -0.6, z: -0.6 }
+        { x: 0.55, z: 0.55 },
+        { x: -0.55, z: 0.55 },
+        { x: 0.55, z: -0.55 },
+        { x: -0.55, z: -0.55 }
     ];
 
     legPositions.forEach(legPos => {
-        const legGeometry = new THREE.CylinderGeometry(0.02, 0.025, 0.3, 6);
-        const leg = new THREE.Mesh(legGeometry, plasticBlackMaterial);
-        leg.position.set(legPos.x, -0.2, legPos.z);
+        // Main leg strut (carbon fiber)
+        const legGeometry = new THREE.CylinderGeometry(0.018, 0.022, 0.28, 8);
+        const leg = new THREE.Mesh(legGeometry, carbonFiberMaterial);
+        leg.position.set(legPos.x, -0.18, legPos.z);
         leg.castShadow = true;
         droneGroup.add(leg);
 
-        // Rubber foot
-        const footGeometry = new THREE.SphereGeometry(0.04, 8, 8);
+        // Shock absorber detail
+        const shockGeometry = new THREE.CylinderGeometry(0.025, 0.025, 0.08, 8);
+        const shock = new THREE.Mesh(shockGeometry, titaniumMaterial);
+        shock.position.set(legPos.x, -0.24, legPos.z);
+        droneGroup.add(shock);
+
+        // Foot pad (high-grip rubber)
+        const footGeometry = new THREE.SphereGeometry(0.035, 10, 10);
+        footGeometry.scale(1, 0.6, 1);
         const footMaterial = new THREE.MeshStandardMaterial({
-            color: 0x1a1a1a,
+            color: 0x0a0a0a,
             metalness: 0,
-            roughness: 0.9
+            roughness: 1
         });
         const foot = new THREE.Mesh(footGeometry, footMaterial);
-        foot.position.set(legPos.x, -0.35, legPos.z);
+        foot.position.set(legPos.x, -0.32, legPos.z);
         droneGroup.add(foot);
     });
 
-    // Small details: ESC wires (tiny cylinders)
-    armPositions.forEach((armPos, index) => {
-        const wireGeometry = new THREE.CylinderGeometry(0.01, 0.01, 0.5, 4);
-        const wireMaterial = new THREE.MeshStandardMaterial({
-            color: index % 2 === 0 ? 0xff0000 : 0x000000,
-            metalness: 0.2,
-            roughness: 0.8
-        });
-        const wire = new THREE.Mesh(wireGeometry, wireMaterial);
-        wire.position.set(armPos.x * 0.2, -0.05, armPos.z * 0.2);
-        wire.rotation.y = armPos.angle;
-        wire.rotation.z = Math.PI / 2;
-        droneGroup.add(wire);
-    });
+    // Antenna array (dual diversity)
+    for (let ant = 0; ant < 2; ant++) {
+        const antennaGeometry = new THREE.CylinderGeometry(0.008, 0.008, 0.35, 6);
+        const antenna = new THREE.Mesh(antennaGeometry, mattePlasticMaterial);
+        antenna.position.set(ant === 0 ? 0.22 : -0.22, 0.28, -0.25);
+        antenna.rotation.z = (ant === 0 ? 1 : -1) * Math.PI / 8;
+        droneGroup.add(antenna);
+
+        // Antenna tip (signal)
+        const tipGeometry = new THREE.SphereGeometry(0.012, 6, 6);
+        const tip = new THREE.Mesh(tipGeometry, redAccentMaterial);
+        tip.position.set(ant === 0 ? 0.25 : -0.25, 0.58, -0.3);
+        droneGroup.add(tip);
+    }
 
     return droneGroup;
 }
@@ -567,6 +849,11 @@ function startDrawing() {
         reset();
     }
 
+    // Resume audio context if suspended (browser autoplay policy)
+    if (audioContext && audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+
     isAnimating = true;
     const path = textToPath(text);
 
@@ -578,6 +865,7 @@ function startDrawing() {
     // Create drones for each path segment
     let currentPath = [];
     drones = [];
+    droneAudioNodes = [];
 
     path.forEach((point, index) => {
         currentPath.push(point);
@@ -586,16 +874,25 @@ function startDrawing() {
         if (currentPath.length === 2 || index === path.length - 1) {
             const drone = createDrone();
             drone.position.copy(currentPath[0]);
+
+            // Create sound for this drone
+            const droneSound = createDroneSound();
+
             drone.userData = {
                 path: [...currentPath],
                 currentPointIndex: 0,
                 progress: 0,
                 color: new THREE.Color().setHSL(Math.random(), 0.8, 0.6),
                 active: false,
-                delay: index * 2 // Stagger drone starts
+                delay: index * 2, // Stagger drone starts
+                sound: droneSound
             };
             scene.add(drone);
             drones.push(drone);
+
+            if (droneSound) {
+                droneAudioNodes.push(droneSound);
+            }
 
             currentPath = [point];
         }
@@ -619,6 +916,10 @@ function startDrawing() {
 
 // Reset scene
 function reset() {
+    // Stop all drone sounds
+    droneAudioNodes.forEach(sound => stopDroneSound(sound));
+    droneAudioNodes = [];
+
     drones.forEach(drone => scene.remove(drone));
     trails.forEach(trail => scene.remove(trail));
     particles.forEach(particle => scene.remove(particle));
@@ -651,6 +952,10 @@ function animate() {
             // Handle delay before starting
             if (drone.userData.delay > 0) {
                 drone.userData.delay -= animationSpeed;
+                // Idle sound for waiting drone
+                if (drone.userData.sound) {
+                    updateDroneSound(drone.userData.sound, false, 0);
+                }
                 return;
             }
 
@@ -687,6 +992,11 @@ function animate() {
                     drone.position.z + direction.z
                 );
 
+                // Update drone sound based on movement
+                if (drone.userData.sound) {
+                    updateDroneSound(drone.userData.sound, true, animationSpeed);
+                }
+
                 // Create particles
                 if (Math.random() < 0.3) {
                     createParticle(drone.position, drone.userData.color);
@@ -713,6 +1023,10 @@ function animate() {
 
                 totalProgress += (drone.userData.currentPointIndex + drone.userData.progress) / path.length;
             } else {
+                // Drone finished path - idle sound
+                if (drone.userData.sound) {
+                    updateDroneSound(drone.userData.sound, false, 0);
+                }
                 totalProgress += 1;
             }
         });
